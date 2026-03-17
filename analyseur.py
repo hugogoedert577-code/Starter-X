@@ -117,7 +117,6 @@ else:
     uploaded_file = st.file_uploader("📥 Glissez le fichier CSV du boîtier ici", type="csv", key=espace_choisi)
 
     if uploaded_file:
-        # ---> AJOUT DES 3 COLONNES GPS ICI <---
         columns = ['Heure', 'Lat', 'Lon', 'Alt', 'Temp', 'Pression', 'Hum', 'Gaz', 'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ']
         df_brut = pd.read_csv(uploaded_file, names=columns)
         df_brut.to_csv(fichier_sauvegarde, index=False)
@@ -127,6 +126,11 @@ else:
 # 5. AFFICHAGE DES GRAPHIQUES ET ANALYSES
 # ==========================================
 if df is not None:
+    # --- CORRECTION BUG CARTE NOIRE : Forcer la lecture en nombres ---
+    df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
+    df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
+    df['Alt'] = pd.to_numeric(df['Alt'], errors='coerce')
+
     # --- CALCULS PHYSIQUES ---
     
     # 1. Accélération Globale
@@ -152,19 +156,22 @@ if df is not None:
 
     st.markdown("---")
 
-    # --- ONGLETS GRAPHIQUES (Ajout de tab0 pour la carte) ---
+    # --- ONGLETS GRAPHIQUES ---
     tab0, tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Carte GPS", "💥 Mouvements & Chocs", "🌡️ Environnement", "⚠️ Journal des Alertes", "🗄️ Données & Export"])
 
-    # ---> NOUVEL ONGLET GPS <---
+    # ---> ONGLET GPS SÉCURISÉ <---
     with tab0:
         st.subheader("Tracé du parcours (GPS)")
         
-        # Vérification de sécurité : si le CSV a bien les colonnes GPS
         if 'Lat' in df.columns and 'Lon' in df.columns:
-            # On ignore les coordonnées 0,0 (quand le GPS ne capte pas au démarrage)
-            df_gps = df[(df['Lat'] != 0) & (df['Lon'] != 0)].copy()
+            # 1. On supprime les lignes vides (NaN) créées par les erreurs de lecture
+            df_gps = df.dropna(subset=['Lat', 'Lon']).copy()
+            
+            # 2. On ignore les zéros (quand le GPS cherche encore les satellites)
+            df_gps = df_gps[(df_gps['Lat'] != 0.0) & (df_gps['Lon'] != 0.0)]
+            
             if not df_gps.empty:
-                # Streamlit veut les colonnes 'lat' et 'lon' en minuscules
+                # Streamlit exige des colonnes en minuscules pour la carte
                 df_map = df_gps[['Lat', 'Lon']].rename(columns={'Lat': 'lat', 'Lon': 'lon'})
                 st.map(df_map)
                 
@@ -173,11 +180,10 @@ if df is not None:
                 fig_alt = px.area(df_gps, x='Heure', y='Alt', title="Profil d'altitude du trajet")
                 st.plotly_chart(fig_alt, use_container_width=True)
             else:
-                st.warning("Aucune coordonnée valide n'a été trouvée sur ce trajet (Le GPS cherchait peut-être le signal).")
+                st.warning("📡 Le GPS n'avait pas encore capté les satellites (coordonnées à 0). Il faut tester le boîtier à l'extérieur !")
         else:
-            st.error("Les données GPS n'ont pas été trouvées dans le fichier. Veuillez vider l'espace et réimporter le bon CSV.")
+            st.error("Les colonnes GPS sont absentes du fichier CSV.")
 
-    # --- RESTE DU CODE IDENTIQUE ---
     with tab1:
         st.subheader("Analyse des Accélérations (Chocs)")
         fig_acc = px.line(df, x='Heure', y='Acceleration_Totale', title="Force G Globale ressentie par le colis")
