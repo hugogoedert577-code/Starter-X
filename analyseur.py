@@ -121,7 +121,7 @@ else:
         columns = [
             'Heure', 'Temp', 'Pression', 'Hum', 'Gaz', 
             'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ', 
-            'Lat', 'Lon', 'Alt'
+            'Lat', 'Lon', 'Alt', 'Satellites'
         ]
         df_brut = pd.read_csv(uploaded_file, names=columns)
         df_brut.to_csv(fichier_sauvegarde, index=False)
@@ -164,23 +164,33 @@ if df is not None:
     # --- ONGLETS GRAPHIQUES ---
     tab0, tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Carte GPS", "💥 Mouvements & Chocs", "🌡️ Environnement", "⚠️ Journal des Alertes", "🗄️ Données & Export"])
 
-    # ---> ONGLET GPS SÉCURISÉ <---
+    # ---> ONGLET GPS AVEC LIGNE CONTINUE <---
     with tab0:
         st.subheader("Tracé du parcours (GPS)")
         
         if 'Lat' in df.columns and 'Lon' in df.columns:
-            # 1. On supprime les lignes vides (NaN) créées par les erreurs de lecture
+            # Nettoyage des données GPS invalides
             df_gps = df.dropna(subset=['Lat', 'Lon']).copy()
-            
-            # 2. On ignore les zéros (le calibrage du début)
             df_gps = df_gps[(df_gps['Lat'] != 0.0) & (df_gps['Lon'] != 0.0)]
             
             if not df_gps.empty:
-                # La carte Streamlit veut les noms 'lat' et 'lon' en minuscules
-                df_map = df_gps[['Lat', 'Lon']].rename(columns={'Lat': 'lat', 'Lon': 'lon'})
-                st.map(df_map)
+                # Création d'une carte avec une vraie ligne de tracé
+                fig_trajet = px.line_mapbox(
+                    df_gps, 
+                    lat="Lat", 
+                    lon="Lon", 
+                    zoom=12, 
+                    height=500,
+                    title="Itinéraire du colis"
+                )
                 
-                # Graphique d'altitude (qui s'appuie sur tes 218m !)
+                # Personnalisation de l'apparence de la carte et de la ligne
+                fig_trajet.update_traces(line=dict(width=4, color='blue'))
+                fig_trajet.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":40,"l":0,"b":0})
+                
+                st.plotly_chart(fig_trajet, use_container_width=True)
+                
+                # Graphique d'altitude
                 st.subheader("Altitude (mètres)")
                 fig_alt = px.area(df_gps, x='Heure', y='Alt', title="Profil d'altitude du trajet")
                 st.plotly_chart(fig_alt, use_container_width=True)
@@ -209,13 +219,40 @@ if df is not None:
         fig_pres = px.line(df, x='Heure', y=['Pression', 'Gaz'], title="Évolution Pression et Gaz")
         st.plotly_chart(fig_pres, use_container_width=True)
 
+    # ---> ONGLET ALERTES AVEC LOCALISATION DES CHOCS <---
     with tab3:
         st.subheader("Détail des incidents critiques")
         if not renversements.empty:
             st.error(f"❌ Le colis a été renversé {len(renversements)} fois (Inclinaison > 60°).")
+            
         if not chocs.empty:
             st.warning(f"⚠️ {len(chocs)} chocs violents ont été enregistrés (>{seuil_choc}G).")
-            st.dataframe(chocs[['Heure', 'Acceleration_Totale', 'Angle_Inclinaison']], use_container_width=True)
+            # Affichage du tableau
+            colonnes_a_afficher = ['Heure', 'Acceleration_Totale', 'Angle_Inclinaison']
+            if 'Lat' in chocs.columns:
+                colonnes_a_afficher += ['Lat', 'Lon']
+            st.dataframe(chocs[colonnes_a_afficher], use_container_width=True)
+            
+            # --- Carte spécifique pour les incidents ---
+            if 'Lat' in chocs.columns:
+                chocs_gps = chocs.dropna(subset=['Lat', 'Lon']).copy()
+                chocs_gps = chocs_gps[(chocs_gps['Lat'] != 0.0) & (chocs_gps['Lon'] != 0.0)]
+                
+                if not chocs_gps.empty:
+                    st.markdown("### 🗺️ Localisation des Chocs Violents")
+                    fig_chocs_map = px.scatter_mapbox(
+                        chocs_gps, 
+                        lat="Lat", 
+                        lon="Lon", 
+                        color_discrete_sequence=["red"], 
+                        zoom=12, 
+                        height=400,
+                        hover_data=["Heure", "Acceleration_Totale"]
+                    )
+                    fig_chocs_map.update_traces(marker=dict(size=12))
+                    fig_chocs_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+                    st.plotly_chart(fig_chocs_map, use_container_width=True)
+
         if renversements.empty and chocs.empty:
             st.success("✅ Aucun incident détecté. Trajet parfait !")
 
