@@ -117,7 +117,12 @@ else:
     uploaded_file = st.file_uploader("📥 Glissez le fichier CSV du boîtier ici", type="csv", key=espace_choisi)
 
     if uploaded_file:
-        columns = ['Heure', 'Lat', 'Lon', 'Alt', 'Temp', 'Pression', 'Hum', 'Gaz', 'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ']
+        # ---> L'ORDRE EXACT DE TON ARDUINO (15 colonnes) <---
+        columns = [
+            'Heure', 'Temp', 'Pression', 'Hum', 'Gaz', 
+            'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ', 
+            'Lat', 'Lon', 'Alt', 'Satellites'
+        ]
         df_brut = pd.read_csv(uploaded_file, names=columns)
         df_brut.to_csv(fichier_sauvegarde, index=False)
         st.rerun() 
@@ -126,7 +131,7 @@ else:
 # 5. AFFICHAGE DES GRAPHIQUES ET ANALYSES
 # ==========================================
 if df is not None:
-    # --- CORRECTION BUG CARTE NOIRE : Forcer la lecture en nombres ---
+    # --- SECURITE CARTE GPS : Forcer la lecture en nombres ---
     df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
     df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
     df['Alt'] = pd.to_numeric(df['Alt'], errors='coerce')
@@ -167,20 +172,20 @@ if df is not None:
             # 1. On supprime les lignes vides (NaN) créées par les erreurs de lecture
             df_gps = df.dropna(subset=['Lat', 'Lon']).copy()
             
-            # 2. On ignore les zéros (quand le GPS cherche encore les satellites)
+            # 2. On ignore les zéros (le calibrage du début)
             df_gps = df_gps[(df_gps['Lat'] != 0.0) & (df_gps['Lon'] != 0.0)]
             
             if not df_gps.empty:
-                # Streamlit exige des colonnes en minuscules pour la carte
+                # La carte Streamlit veut les noms 'lat' et 'lon' en minuscules
                 df_map = df_gps[['Lat', 'Lon']].rename(columns={'Lat': 'lat', 'Lon': 'lon'})
                 st.map(df_map)
                 
-                # Graphique d'altitude
+                # Graphique d'altitude (qui s'appuie sur tes 218m !)
                 st.subheader("Altitude (mètres)")
                 fig_alt = px.area(df_gps, x='Heure', y='Alt', title="Profil d'altitude du trajet")
                 st.plotly_chart(fig_alt, use_container_width=True)
             else:
-                st.warning("📡 Le GPS n'avait pas encore capté les satellites (coordonnées à 0). Il faut tester le boîtier à l'extérieur !")
+                st.warning("📡 Le GPS n'avait pas encore capté les satellites (coordonnées à 0).")
         else:
             st.error("Les colonnes GPS sont absentes du fichier CSV.")
 
