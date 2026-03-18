@@ -121,7 +121,7 @@ else:
         columns = [
             'Heure', 'Temp', 'Pression', 'Hum', 'Gaz', 
             'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ', 
-            'Lat', 'Lon', 'Alt', 'Satellites'
+            'Lat', 'Lon', 'Alt'
         ]
         df_brut = pd.read_csv(uploaded_file, names=columns)
         df_brut.to_csv(fichier_sauvegarde, index=False)
