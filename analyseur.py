@@ -57,7 +57,6 @@ espaces_existants = charger_espaces()
 
 st.sidebar.title("📦 Mes Espaces")
 
-# 2.A : Liste cliquable des modules
 if not espaces_existants:
     st.sidebar.info("Aucun espace n'a été créé.")
     espace_choisi = None
@@ -66,7 +65,6 @@ else:
 
 st.sidebar.markdown("---")
 
-# 2.B : Création d'un nouvel espace
 with st.sidebar.expander("➕ Créer un nouvel espace"):
     nouvel_espace = st.text_input("Nom du module")
     if st.button("Créer"):
@@ -77,7 +75,6 @@ with st.sidebar.expander("➕ Créer un nouvel espace"):
 
 st.sidebar.markdown("---")
 
-# 2.C : Réglage dynamique par l'utilisateur
 st.sidebar.subheader("⚙️ Paramètres d'analyse")
 seuil_choc = st.sidebar.number_input("⚡ Seuil de choc violent (G)", min_value=0.5, max_value=10.0, value=1.5, step=0.1)
 
@@ -117,12 +114,13 @@ else:
     uploaded_file = st.file_uploader("📥 Glissez le fichier CSV du boîtier ici", type="csv", key=espace_choisi)
 
     if uploaded_file:
-        # ---> L'ORDRE EXACT DE TON ARDUINO (15 colonnes) <---
+        # L'ordre exact des colonnes générées par ton code Arduino
         columns = [
             'Heure', 'Temp', 'Pression', 'Hum', 'Gaz', 
             'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ', 
             'Lat', 'Lon', 'Alt', 'Satellites'
         ]
+        # Lecture sans header (car l'Arduino n'écrit pas les noms de colonnes)
         df_brut = pd.read_csv(uploaded_file, names=columns)
         df_brut.to_csv(fichier_sauvegarde, index=False)
         st.rerun() 
@@ -131,17 +129,35 @@ else:
 # 5. AFFICHAGE DES GRAPHIQUES ET ANALYSES
 # ==========================================
 if df is not None:
-    # --- SECURITE CARTE GPS : Forcer la lecture en nombres ---
+    # --- NETTOYAGE ET CONVERSION ---
     df['Lat'] = pd.to_numeric(df['Lat'], errors='coerce')
     df['Lon'] = pd.to_numeric(df['Lon'], errors='coerce')
     df['Alt'] = pd.to_numeric(df['Alt'], errors='coerce')
 
+    # --- CALCUL DE LA DURÉE RÉELLE (Basé sur le RTC) ---
+    try:
+        # On convertit la colonne Heure en objets temporels
+        df['temp_time'] = pd.to_datetime(df['Heure'], format='%H:%M:%S')
+        debut = df['temp_time'].iloc[0]
+        fin = df['temp_time'].iloc[-1]
+        
+        # Calcul de la différence
+        delta = fin - debut
+        
+        # Gestion du passage à minuit (si fin < debut)
+        if delta.total_seconds() < 0:
+            delta += pd.Timedelta(days=1)
+            
+        duree_reelle_min = delta.total_seconds() / 60
+        affichage_duree = f"{duree_reelle_min:.1f} min"
+    except:
+        affichage_duree = "Format Heure Invalide"
+
     # --- CALCULS PHYSIQUES ---
-    
-    # 1. Accélération Globale
+    # 1. Accélération Globale (Magnitude du vecteur)
     df['Acceleration_Totale'] = (df['AccX']**2 + df['AccY']**2 + df['AccZ']**2)**0.5
     
-    # 2. Angle d'inclinaison
+    # 2. Angle d'inclinaison (basé sur l'axe Z)
     df['Angle_Inclinaison'] = np.degrees(np.arccos(np.clip(df['AccZ'] / (df['Acceleration_Totale'] + 1e-6), -1.0, 1.0)))
     
     # 3. État de renversement (Angle > 60 degrés)
@@ -157,115 +173,95 @@ if df is not None:
     col1.metric("Temp. Moyenne", f"{round(df['Temp'].mean(), 1)} °C")
     col2.metric(f"Chocs Violents (>{seuil_choc}G)", len(chocs), delta_color="inverse")
     col3.metric("Instants Renversés (>60°)", len(renversements), delta_color="inverse")
-    col4.metric("Durée Enregistrée", f"{len(df)*200/1000/60:.1f} min")
+    col4.metric("Durée Enregistrée", affichage_duree)
 
     st.markdown("---")
 
     # --- ONGLETS GRAPHIQUES ---
     tab0, tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Carte GPS", "💥 Mouvements & Chocs", "🌡️ Environnement", "⚠️ Journal des Alertes", "🗄️ Données & Export"])
 
-    # ---> ONGLET GPS AVEC LIGNE CONTINUE <---
+    # ONGLET 0 : GPS
     with tab0:
         st.subheader("Tracé du parcours (GPS)")
-        
         if 'Lat' in df.columns and 'Lon' in df.columns:
-            # Nettoyage des données GPS invalides
             df_gps = df.dropna(subset=['Lat', 'Lon']).copy()
+            # On retire les points 0,0 (pas de fix)
             df_gps = df_gps[(df_gps['Lat'] != 0.0) & (df_gps['Lon'] != 0.0)]
             
             if not df_gps.empty:
-                # Création d'une carte avec une vraie ligne de tracé
                 fig_trajet = px.line_mapbox(
-                    df_gps, 
-                    lat="Lat", 
-                    lon="Lon", 
-                    zoom=12, 
-                    height=500,
-                    title="Itinéraire du colis"
+                    df_gps, lat="Lat", lon="Lon", 
+                    zoom=12, height=500, title="Itinéraire du colis"
                 )
-                
-                # Personnalisation de l'apparence de la carte et de la ligne
                 fig_trajet.update_traces(line=dict(width=4, color='blue'))
                 fig_trajet.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":40,"l":0,"b":0})
-                
                 st.plotly_chart(fig_trajet, use_container_width=True)
                 
-                # Graphique d'altitude
-                st.subheader("Altitude (mètres)")
-                fig_alt = px.area(df_gps, x='Heure', y='Alt', title="Profil d'altitude du trajet")
+                st.subheader("Profil d'Altitude")
+                fig_alt = px.area(df_gps, x='Heure', y='Alt', title="Altitude (mètres)")
                 st.plotly_chart(fig_alt, use_container_width=True)
             else:
-                st.warning("📡 Le GPS n'avait pas encore capté les satellites (coordonnées à 0).")
+                st.warning("📡 Aucune donnée GPS valide (Fix satellite manquant).")
         else:
-            st.error("Les colonnes GPS sont absentes du fichier CSV.")
+            st.error("Colonnes GPS absentes.")
 
+    # ONGLET 1 : ACCÉLÉRATIONS
     with tab1:
-        st.subheader("Analyse des Accélérations (Chocs)")
-        fig_acc = px.line(df, x='Heure', y='Acceleration_Totale', title="Force G Globale ressentie par le colis")
-        fig_acc.add_hline(y=seuil_choc, line_dash="dash", line_color="red", annotation_text=f"Seuil ({seuil_choc}G)")
+        st.subheader("Analyse des Accélérations (Force G)")
+        fig_acc = px.line(df, x='Heure', y='Acceleration_Totale', title="Accélération résultante")
+        fig_acc.add_hline(y=seuil_choc, line_dash="dash", line_color="red", annotation_text="Seuil de choc")
         st.plotly_chart(fig_acc, use_container_width=True)
 
-        st.subheader("Inclinaison du Colis (Angle en degrés)")
-        fig_angle = px.line(df, x='Heure', y='Angle_Inclinaison', title="0° = Droit | 90° = Sur le côté | 180° = À l'envers")
-        fig_angle.add_hline(y=60, line_dash="dot", line_color="orange", annotation_text="Seuil de Renversement (60°)")
+        st.subheader("Inclinaison du Colis")
+        fig_angle = px.line(df, x='Heure', y='Angle_Inclinaison', title="Angle d'inclinaison (0° = Droit)")
+        fig_angle.add_hline(y=60, line_dash="dot", line_color="orange", annotation_text="Seuil de renversement")
         st.plotly_chart(fig_angle, use_container_width=True)
 
+    # ONGLET 2 : ENVIRONNEMENT
     with tab2:
-        st.subheader("Données atmosphériques (Température & Humidité)")
-        fig_env = px.line(df, x='Heure', y=['Temp', 'Hum'], title="Évolution Température (°C) et Humidité (%)")
+        st.subheader("Conditions Atmosphériques")
+        fig_env = px.line(df, x='Heure', y=['Temp', 'Hum'], title="Température (°C) et Humidité (%)")
         st.plotly_chart(fig_env, use_container_width=True)
-
-        st.subheader("Données atmosphériques (Pression & Gaz)")
-        fig_pres = px.line(df, x='Heure', y=['Pression', 'Gaz'], title="Évolution Pression et Gaz")
+        
+        fig_pres = px.line(df, x='Heure', y=['Pression', 'Gaz'], title="Pression (hPa) et Qualité de l'air (kOhms)")
         st.plotly_chart(fig_pres, use_container_width=True)
 
-    # ---> ONGLET ALERTES AVEC LOCALISATION DES CHOCS <---
+    # ONGLET 3 : ALERTES
     with tab3:
         st.subheader("Détail des incidents critiques")
         if not renversements.empty:
-            st.error(f"❌ Le colis a été renversé {len(renversements)} fois (Inclinaison > 60°).")
-            
+            st.error(f"❌ Le colis a été renversé {len(renversements)} fois.")
+        
         if not chocs.empty:
-            st.warning(f"⚠️ {len(chocs)} chocs violents ont été enregistrés (>{seuil_choc}G).")
-            # Affichage du tableau
-            colonnes_a_afficher = ['Heure', 'Acceleration_Totale', 'Angle_Inclinaison']
-            if 'Lat' in chocs.columns:
-                colonnes_a_afficher += ['Lat', 'Lon']
-            st.dataframe(chocs[colonnes_a_afficher], use_container_width=True)
+            st.warning(f"⚠️ {len(chocs)} chocs violents détectés.")
+            st.dataframe(chocs[['Heure', 'Acceleration_Totale', 'Angle_Inclinaison', 'Lat', 'Lon']], use_container_width=True)
             
-            # --- Carte spécifique pour les incidents ---
-            if 'Lat' in chocs.columns:
-                chocs_gps = chocs.dropna(subset=['Lat', 'Lon']).copy()
-                chocs_gps = chocs_gps[(chocs_gps['Lat'] != 0.0) & (chocs_gps['Lon'] != 0.0)]
-                
-                if not chocs_gps.empty:
-                    st.markdown("### 🗺️ Localisation des Chocs Violents")
-                    fig_chocs_map = px.scatter_mapbox(
-                        chocs_gps, 
-                        lat="Lat", 
-                        lon="Lon", 
-                        color_discrete_sequence=["red"], 
-                        zoom=12, 
-                        height=400,
-                        hover_data=["Heure", "Acceleration_Totale"]
-                    )
-                    fig_chocs_map.update_traces(marker=dict(size=12))
-                    fig_chocs_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
-                    st.plotly_chart(fig_chocs_map, use_container_width=True)
-
+            # Localisation des chocs
+            chocs_gps = chocs.dropna(subset=['Lat', 'Lon']).copy()
+            chocs_gps = chocs_gps[(chocs_gps['Lat'] != 0.0) & (chocs_gps['Lon'] != 0.0)]
+            if not chocs_gps.empty:
+                st.markdown("### 🗺️ Carte des impacts")
+                fig_chocs_map = px.scatter_mapbox(
+                    chocs_gps, lat="Lat", lon="Lon", 
+                    color_discrete_sequence=["red"], zoom=12, height=400
+                )
+                fig_chocs_map.update_traces(marker=dict(size=14))
+                fig_chocs_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+                st.plotly_chart(fig_chocs_map, use_container_width=True)
+        
         if renversements.empty and chocs.empty:
-            st.success("✅ Aucun incident détecté. Trajet parfait !")
+            st.success("✅ Aucun incident détecté sur ce trajet.")
 
+    # ONGLET 4 : DONNÉES BRUTES
     with tab4:
-        st.subheader("Données Brutes")
-        st.write("Tableau complet des valeurs enregistrées par le capteur.")
+        st.subheader("Tableau de bord des données")
         st.dataframe(df, use_container_width=True)
         
-        # Bouton d'export Excel
+        # Bouton d'export Excel (CSV formaté Europe)
         csv_export = df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
         st.download_button(
-            label="📥 Exporter les données vers Excel (CSV)",
+            label="📥 Télécharger les données (Excel/CSV)",
             data=csv_export,
-            file_name=f"Export_{espace_choisi}.csv",
+            file_name=f"LogiTrack_{espace_choisi}.csv",
             mime="text/csv"
         )
