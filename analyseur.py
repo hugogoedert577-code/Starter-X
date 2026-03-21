@@ -4,217 +4,179 @@ import streamlit as st
 import numpy as np
 import json
 import os
+import requests
 
 # ==========================================
-# CONFIGURATION DE LA PAGE
+# 0. CONFIGURATION & CLÉ API
 # ==========================================
-st.set_page_config(page_title="LogiTrack - Analyse Pro", page_icon="📦", layout="wide")
+st.set_page_config(page_title="LogiTrack - Dashboard Expert", page_icon="📦", layout="wide")
+
+# TA CLÉ API GOOGLE OPÉRATIONNELLE :
+GOOGLE_API_KEY = "AIzaSyAmJaTrwAV4ahAjO5pCTG-YWI-pWWyrQLE" 
 
 # ==========================================
-# 0. FONCTIONS DE SAUVEGARDE (JSON)
+# 1. GESTION DES ESPACES (JSON)
 # ==========================================
-FICHIER_ESPACES = "espaces_logitrack.json"
+FICHIER_JSON = "espaces_logitrack.json"
 
 def charger_espaces():
-    if os.path.exists(FICHIER_ESPACES):
-        with open(FICHIER_ESPACES, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    if os.path.exists(FICHIER_JSON):
+        try:
+            with open(FICHIER_JSON, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except: return []
     return []
 
 def sauvegarder_espace(nom):
     espaces = charger_espaces()
     if nom not in espaces:
         espaces.append(nom)
-        with open(FICHIER_ESPACES, 'w', encoding='utf-8') as f:
+        with open(FICHIER_JSON, 'w', encoding='utf-8') as f:
             json.dump(espaces, f)
 
 # ==========================================
-# 1. SYSTÈME DE CONNEXION (LOGIN)
+# 2. FONCTION GÉOLOCALISATION WIFI (GOOGLE)
 # ==========================================
-if 'logged_in' not in st.session_state:
+def geolocaliser_wifi(mac_raw):
+    """Interroge Google pour transformer une adresse MAC en Lat/Lon"""
+    if not mac_raw or "00:00:00" in str(mac_raw) or mac_raw == "0.0":
+        return None, None
+    
+    mac_clean = str(mac_raw).replace("MAC_", "")
+    url = f"https://www.googleapis.com/geolocation/v1/geolocate?key={GOOGLE_API_KEY}"
+    payload = {"considerIp": "false", "wifiAccessPoints": [{"macAddress": mac_clean}]}
+    
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        res = r.json()
+        if 'location' in res:
+            return res['location']['lat'], res['location']['lng']
+    except:
+        return None, None
+    return None, None
+
+# ==========================================
+# 3. LOGIN & NAVIGATION
+# ==========================================
+if 'logged_in' not in st.session_state: 
     st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.title("🔐 Espace Sécurisé LogiTrack")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.info("Veuillez vous connecter pour accéder au tableau de bord.")
-        username = st.text_input("Identifiant")
-        password = st.text_input("Mot de passe", type="password")
-        
-        if st.button("Se connecter"):
-            if username == "test" and password == "0000":
-                st.session_state['logged_in'] = True
-                st.rerun()
-            else:
-                st.error("Identifiants incorrects.")
+    st.title("🔐 Accès Sécurisé LogiTrack")
+    u = st.text_input("Identifiant")
+    p = st.text_input("Mot de passe", type="password")
+    if st.button("Connexion"):
+        if u == "test" and p == "0000":
+            st.session_state['logged_in'] = True
+            st.rerun()
     st.stop()
 
-# ==========================================
-# 2. MENU LATÉRAL : ESPACES & RÉGLAGES
-# ==========================================
-espaces_existants = charger_espaces()
+espaces = charger_espaces()
+st.sidebar.title("📦 Mes Trajets")
+espace_choisi = st.sidebar.radio("Choisir un trajet :", espaces) if espaces else None
 
-st.sidebar.title("📦 Mes Espaces")
-
-if not espaces_existants:
-    st.sidebar.info("Aucun espace n'a été créé.")
-    espace_choisi = None
-else:
-    espace_choisi = st.sidebar.radio("Sélectionnez le trajet à analyser :", espaces_existants)
+with st.sidebar.expander("➕ Créer un espace"):
+    n_esp = st.text_input("Nom du module")
+    if st.button("Ajouter") and n_esp:
+        sauvegarder_espace(n_esp)
+        st.rerun()
 
 st.sidebar.markdown("---")
+seuil_choc = st.sidebar.number_input("⚡ Seuil de choc (G)", 0.5, 10.0, 1.5, step=0.1)
 
-with st.sidebar.expander("➕ Créer un nouvel espace"):
-    nouvel_espace = st.text_input("Nom du module")
-    if st.button("Créer"):
-        if nouvel_espace and nouvel_espace.strip() != "":
-            sauvegarder_espace(nouvel_espace)
-            st.success(f"Espace '{nouvel_espace}' créé !")
-            st.rerun()
-
-st.sidebar.markdown("---")
-
-st.sidebar.subheader("⚙️ Paramètres d'analyse")
-seuil_choc = st.sidebar.number_input("⚡ Seuil de choc violent (G)", min_value=0.5, max_value=10.0, value=1.5, step=0.1)
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🚪 Se déconnecter"):
+if st.sidebar.button("🚪 Déconnexion"):
     st.session_state['logged_in'] = False
     st.rerun()
 
 # ==========================================
-# 3. VERROUILLAGE SI AUCUN ESPACE CHOISI
+# 4. TRAITEMENT DES DONNÉES
 # ==========================================
-if espace_choisi is None:
-    st.title("👋 Bienvenue sur LogiTrack")
-    st.warning("👈 Veuillez d'abord créer un espace de suivi dans le menu de gauche.")
-    st.stop()
-
-# ==========================================
-# 4. TABLEAU DE BORD (GESTION DES FICHIERS)
-# ==========================================
-st.title(f"📊 Analyse des données : {espace_choisi}")
-
-fichier_sauvegarde = f"donnees_{espace_choisi}.csv"
-df = None 
-
-# ETAPE A : Les données existent déjà
-if os.path.exists(fichier_sauvegarde):
-    st.success(f"📂 Données du module '{espace_choisi}' chargées.")
-    df = pd.read_csv(fichier_sauvegarde) 
+if espace_choisi:
+    st.title(f"📊 Analyse : {espace_choisi}")
+    f_csv = f"donnees_{espace_choisi}.csv"
     
-    if st.button("🗑️ Vider cet espace et importer un nouveau trajet"):
-        os.remove(fichier_sauvegarde)
-        st.rerun()
+    if os.path.exists(f_csv):
+        df = pd.read_csv(f_csv)
+        if st.sidebar.button("🗑️ Vider l'espace"):
+            os.remove(f_csv)
+            st.rerun()
+    else:
+        uploaded = st.file_uploader("📥 Importer LOG.CSV", type="csv")
+        if uploaded:
+            cols = ['Heure','Temp','Pression','Hum','Gaz','AccX','AccY','AccZ','GyroX','GyroY','GyroZ','Lat','Lon','Alt','Sat']
+            df = pd.read_csv(uploaded, names=cols, header=None)
+            df.to_csv(f_csv, index=False)
+            st.rerun()
+        else: st.stop()
 
-# ETAPE B : Importer des données
-else:
-    st.info("Aucune donnée pour ce module. Veuillez importer le fichier CSV généré par l'Arduino.")
-    uploaded_file = st.file_uploader("📥 Glissez le fichier CSV du boîtier ici", type="csv", key=espace_choisi)
+    # --- CALCULS ---
+    df['G'] = (df['AccX']**2 + df['AccY']**2 + df['AccZ']**2)**0.5
+    # Inclinaison
+    df['Angle'] = np.degrees(np.arccos(np.clip(df['AccZ'] / (df['G'] + 1e-6), -1.0, 1.0)))
+    
+    is_wifi = df['Lat'].astype(str).str.contains('MAC_', na=False)
+    chocs = df[df['G'] > seuil_choc]
+    renversements = df[df['Angle'] > 60]
 
-    if uploaded_file:
-        columns = [
-            'Heure', 'Temp', 'Pression', 'Hum', 'Gaz', 
-            'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ', 
-            'Lat', 'Lon', 'Alt', 'Satellites'
-        ]
-        df_brut = pd.read_csv(uploaded_file, names=columns)
-        df_brut.to_csv(fichier_sauvegarde, index=False)
-        st.rerun() 
-
-# ==========================================
-# 5. AFFICHAGE DES GRAPHIQUES ET ANALYSES
-# ==========================================
-if df is not None:
-    # --- FILTRAGE WIFI VS GPS ---
-    # On identifie les lignes qui contiennent des adresses MAC (WiFi)
-    mask_wifi = df['Lat'].astype(str).str.contains('MAC_', na=False)
-    df_wifi = df[mask_wifi].copy()
-    df_gps = df[~mask_wifi].copy()
-
-    # --- NETTOYAGE ET CONVERSION NUMÉRIQUE (Uniquement pour le GPS) ---
+    # --- PRÉPARATION CARTE ---
+    points_map = []
+    df_gps = df[~is_wifi].copy()
     df_gps['Lat'] = pd.to_numeric(df_gps['Lat'], errors='coerce')
     df_gps['Lon'] = pd.to_numeric(df_gps['Lon'], errors='coerce')
-    df_gps['Alt'] = pd.to_numeric(df_gps['Alt'], errors='coerce')
+    
+    for _, row in df_gps.dropna(subset=['Lat', 'Lon']).iterrows():
+        if row['Lat'] != 0:
+            points_map.append({'Heure': row['Heure'], 'Lat': row['Lat'], 'Lon': row['Lon'], 'Type': 'GPS (Extérieur)'})
 
-    # --- CALCUL DE LA DURÉE RÉELLE (Basé sur le RTC) ---
+    df_wifi = df[is_wifi].copy()
+    if not df_wifi.empty:
+        with st.spinner("🌍 Localisation WiFi via Google..."):
+            macs_uniques = df_wifi['Lat'].unique()
+            cache_geo = {m: geolocaliser_wifi(m) for m in macs_uniques}
+            for _, row in df_wifi.iterrows():
+                lat_w, lon_w = cache_geo.get(row['Lat'], (None, None))
+                if lat_w:
+                    points_map.append({'Heure': row['Heure'], 'Lat': lat_w, 'Lon': lon_w, 'Type': 'WiFi (Intérieur)'})
+
+    # --- AFFICHAGE ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Temp. Moy", f"{df['Temp'].mean():.1f}°C")
+    c2.metric("Chocs Violents", len(chocs))
+    c3.metric("Zones WiFi", len(df_wifi))
     try:
-        df['temp_time'] = pd.to_datetime(df['Heure'], format='%H:%M:%S')
-        debut = df['temp_time'].iloc[0]
-        fin = df['temp_time'].iloc[-1]
-        delta = fin - debut
+        df['t'] = pd.to_datetime(df['Heure'], format='%H:%M:%S')
+        delta = df['t'].iloc[-1] - df['t'].iloc[0]
         if delta.total_seconds() < 0: delta += pd.Timedelta(days=1)
-        affichage_duree = f"{delta.total_seconds() / 60:.1f} min"
-    except:
-        affichage_duree = "Format Heure Invalide"
+        c4.metric("Durée", f"{delta.total_seconds()/60:.1f} min")
+    except: c4.metric("Durée", "N/A")
 
-    # --- CALCULS PHYSIQUES ---
-    df['Acceleration_Totale'] = (df['AccX']**2 + df['AccY']**2 + df['AccZ']**2)**0.5
-    df['Angle_Inclinaison'] = np.degrees(np.arccos(np.clip(df['AccZ'] / (df['Acceleration_Totale'] + 1e-6), -1.0, 1.0)))
-    df['Etat_Renversement'] = (df['Angle_Inclinaison'] > 60).astype(int)
-
-    # --- FILTRAGES POUR LES ALERTES ---
-    chocs = df[df['Acceleration_Totale'] > seuil_choc]
-    renversements = df[df['Etat_Renversement'] == 1]
-
-    # --- INDICATEURS CLÉS (KPI) ---
-    st.markdown("### 🎯 Résumé du trajet")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Temp. Moyenne", f"{round(df['Temp'].mean(), 1)} °C")
-    col2.metric(f"Chocs Violents (>{seuil_choc}G)", len(chocs), delta_color="inverse")
-    col3.metric("Points WiFi (Entrepôt)", len(df_wifi))
-    col4.metric("Durée Enregistrée", affichage_duree)
-
-    st.markdown("---")
-
-    # --- ONGLETS GRAPHIQUES ---
-    tab0, tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Carte GPS", "💥 Mouvements & Chocs", "🌡️ Environnement", "⚠️ Journal des Alertes", "🗄️ Données Brutes"])
-
-    with tab0:
-        st.subheader("Tracé du parcours (GPS)")
-        # On n'affiche que les points GPS valides et non nuls
-        df_map = df_gps.dropna(subset=['Lat', 'Lon'])
-        df_map = df_map[(df_map['Lat'] != 0.0)]
-        
-        if not df_map.empty:
-            fig_trajet = px.line_mapbox(df_map, lat="Lat", lon="Lon", zoom=12, height=500)
-            fig_trajet.update_traces(line=dict(width=4, color='blue'))
-            fig_trajet.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":40,"l":0,"b":0})
-            st.plotly_chart(fig_trajet, use_container_width=True)
-            
-            st.subheader("Profil d'Altitude")
-            fig_alt = px.area(df_map, x='Heure', y='Alt', title="Altitude (mètres)")
-            st.plotly_chart(fig_alt, use_container_width=True)
-        else:
-            st.warning("📡 Aucun signal GPS. Le colis est actuellement localisé via WiFi (Mode Intérieur).")
-            if not df_wifi.empty:
-                st.info(f"Dernière borne WiFi détectée : {df_wifi['Lat'].iloc[-1]}")
-
+    tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Carte", "📈 Graphiques", "⚠️ Alertes", "📄 Données Brutes"])
+    
     with tab1:
-        st.subheader("Analyse des Accélérations (Force G)")
-        fig_acc = px.line(df, x='Heure', y='Acceleration_Totale', title="Force G Globale")
-        fig_acc.add_hline(y=seuil_choc, line_dash="dash", line_color="red")
-        st.plotly_chart(fig_acc, use_container_width=True)
-        st.plotly_chart(px.line(df, x='Heure', y='Angle_Inclinaison', title="Angle d'inclinaison (°)"), use_container_width=True)
+        if points_map:
+            df_map = pd.DataFrame(points_map).sort_values('Heure')
+            fig = px.line_mapbox(df_map, lat="Lat", lon="Lon", color="Type", zoom=13, height=600)
+            fig.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":0,"l":0,"b":0})
+            st.plotly_chart(fig, use_container_width=True)
+        else: st.info("Aucune donnée de localisation.")
 
     with tab2:
-        st.subheader("Conditions Ambiantes")
-        st.plotly_chart(px.line(df, x='Heure', y=['Temp', 'Hum'], title="Température et Humidité"), use_container_width=True)
-        st.plotly_chart(px.line(df, x='Heure', y='Pression', title="Pression Atmosphérique"), use_container_width=True)
+        st.plotly_chart(px.line(df, x='Heure', y='G', title="Force G"), use_container_width=True)
+        st.plotly_chart(px.line(df, x='Heure', y=['Temp', 'Hum'], title="Environnement"), use_container_width=True)
+        st.plotly_chart(px.line(df, x='Heure', y='Angle', title="Inclinaison (0°=Droit)"), use_container_width=True)
 
     with tab3:
-        st.subheader("Détail des incidents")
+        st.subheader("Journal des incidents critiques")
         if not chocs.empty:
-            st.warning(f"⚠️ {len(chocs)} chocs violents détectés.")
-            st.dataframe(chocs[['Heure', 'Acceleration_Totale', 'Lat', 'Lon']], use_container_width=True)
+            st.warning(f"💥 {len(chocs)} impacts détectés au-dessus de {seuil_choc}G")
+            st.dataframe(chocs[['Heure', 'G', 'Temp', 'Lat', 'Lon']], use_container_width=True)
         if not renversements.empty:
-            st.error(f"❌ Le colis a été renversé {len(renversements)} fois.")
+            st.error(f"🔄 {len(renversements)} moments de basculement détectés (>60°)")
+            st.dataframe(renversements[['Heure', 'Angle', 'G']], use_container_width=True)
         if chocs.empty and renversements.empty:
-            st.success("✅ Aucun incident détecté.")
+            st.success("✅ Aucun incident majeur à signaler sur ce trajet.")
 
     with tab4:
         st.subheader("Journal de bord complet")
         st.dataframe(df, use_container_width=True)
-        csv_export = df.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig')
-        st.download_button("📥 Télécharger CSV (Excel)", csv_export, f"LogiTrack_{espace_choisi}.csv", "text/csv")
+        st.download_button("📥 Télécharger CSV", df.to_csv(index=False), f"LogiTrack_{espace_choisi}.csv")
